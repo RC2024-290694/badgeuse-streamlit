@@ -3,6 +3,7 @@ import json
 import os
 import pandas as pd
 from datetime import datetime, timedelta, date
+from io import BytesIO
 
 # ---------- CONFIGURATION ----------
 JOURNAL_FILE = "heures_travail.json"
@@ -41,7 +42,7 @@ def estimate_finish(start, worked, target):
 
 # ---------- CHARGEMENT & MIGRATION ----------
 journal = load_journal()
-# Migration pour compatibilité avec anciennes versions
+# Migration des anciennes clés
 for day, rec in journal.items():
     if "debut" in rec:
         rec.setdefault("start", rec.pop("debut"))
@@ -51,21 +52,13 @@ for day, rec in journal.items():
         rec.setdefault("end", rec.pop("fin"))
     if "overtime" in rec:
         rec.setdefault("overtime_manual", rec.pop("overtime"))
-    # Assurer la présence de toutes les clés
     for k in ["start", "pause", "resume", "end"]:
         rec.setdefault(k, None)
     rec.setdefault("overtime_manual", 0.0)
-
 # Initialisation du jour
 today = date.today().isoformat()
 if today not in journal:
-    journal[today] = {
-        "start": None,
-        "pause": None,
-        "resume": None,
-        "end": None,
-        "overtime_manual": 0.0
-    }
+    journal[today] = {"start": None, "pause": None, "resume": None, "end": None, "overtime_manual": 0.0}
 record = journal[today]
 
 # ---------- SIDEBAR ----------
@@ -79,10 +72,10 @@ st.set_page_config(page_title="Badgeuse Mobile", layout="wide")
 st.title("🕒 Tracker de Temps de Travail")
 
 # Calcul des temps
-start_ts = parse_ts(record["start"])
-pause_ts = parse_ts(record["pause"])
-resume_ts = parse_ts(record["resume"])
-end_ts = parse_ts(record["end"]) or datetime.now()
+start_ts = parse_ts(record.get("start"))
+pause_ts = parse_ts(record.get("pause"))
+resume_ts = parse_ts(record.get("resume"))
+end_ts = parse_ts(record.get("end")) or datetime.now()
 worked = timedelta(0)
 if start_ts:
     if pause_ts and resume_ts:
@@ -96,7 +89,7 @@ manual_ot = record.get("overtime_manual", 0.0)
 # Affichage métriques
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Temps travaillé", format_td(worked), delta=f"{delta_hours:+.2f}h")
-c2.metric("Temps restants", format_td(timedelta(hours=target) - worked if worked < timedelta(hours=target) else timedelta(0)))
+c2.metric("Temps restants", format_td((timedelta(hours=target) - worked) if worked < timedelta(hours=target) else timedelta(0)))
 c3.metric("Overtime manuel", f"{manual_ot:.2f}h")
 est_finish = estimate_finish(resume_ts or start_ts or datetime.now(), worked, target).strftime('%H:%M') if start_ts else "--"
 c4.metric("Est. fin (8h)", est_finish)
@@ -105,10 +98,10 @@ c4.metric("Est. fin (8h)", est_finish)
 st.subheader("📌 Actions")
 b1, b2, b3, b4 = st.columns(4)
 actions = {
-    "start": not record["start"],
-    "pause": record["start"] and not record["pause"],
-    "resume": record["pause"] and not record["resume"],
-    "end": record["start"] and not record["end"]
+    "start": not record.get("start"),
+    "pause": record.get("start") and not record.get("pause"),
+    "resume": record.get("pause") and not record.get("resume"),
+    "end": record.get("start") and not record.get("end")
 }
 if b1.button("🟢 Démarrer", disabled=not actions["start"]):
     record["start"] = datetime.now().isoformat()
@@ -146,10 +139,7 @@ for d, rec in sorted(journal.items(), reverse=True)[:DAYS_HISTORY]:
     r = parse_ts(rec.get("resume"))
     e = parse_ts(rec.get("end")) or datetime.now()
     if s:
-        if p and r:
-            wt = (p - s) + (e - r)
-        else:
-            wt = e - s
+        wt = ((p - s) + (e - r)) if p and r else (e - s)
         delta = round(wt.total_seconds()/3600 - target, 2)
         rows.append({
             "Date": d,
@@ -164,14 +154,13 @@ for d, rec in sorted(journal.items(), reverse=True)[:DAYS_HISTORY]:
 if rows:
     df = pd.DataFrame(rows)
     st.dataframe(df)
+    # Export CSV
     csv = df.to_csv(index=False).encode()
     st.download_button("📥 Télécharger CSV", csv, "heures_travail.csv", "text/csv")
-    # Télécharger Excel
-    from io import BytesIO
+    # Export Excel via openpyxl
     buf = BytesIO()
-    with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
-        df.to_excel(writer, index=False, sheet_name="Journal")
-        writer.save()
+    df.to_excel(buf, index=False, sheet_name="Journal")
+    buf.seek(0)
     xlsx = buf.getvalue()
     st.download_button("📥 Télécharger Excel", xlsx, "heures_travail.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
