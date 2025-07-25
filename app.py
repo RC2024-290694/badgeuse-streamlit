@@ -2,144 +2,178 @@ import streamlit as st
 import json
 import os
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date, time
 
-# Constantes
+# ---------- CONFIGURATION ----------
 JOURNAL_FILE = "heures_travail.json"
-HEURES_CIBLE = 8
-HEURES_ALERTE = 8.5
-HEURES_MAX = 9.0
+DEFAULT_TARGET = 8.0             # heures normales
+DEFAULT_ALERT = 8.5              # seuil d'alerte
+DEFAULT_MAX = 9.0                # plafond
+DAYS_HISTORY = 14                # jours à afficher en historique
 
-# Fonctions de base
-def charger_journal():
+# ---------- UTILITAIRES ----------
+
+def load_journal():
     if os.path.exists(JOURNAL_FILE):
         with open(JOURNAL_FILE, "r") as f:
             return json.load(f)
     return {}
 
-def sauvegarder_journal(journal):
+
+def save_journal(journal):
     with open(JOURNAL_FILE, "w") as f:
         json.dump(journal, f, indent=2)
 
-def format_timedelta(td):
-    heures, reste = divmod(td.total_seconds(), 3600)
-    minutes = reste // 60
-    return f"{int(heures)}h {int(minutes)}min"
 
-def estimer_fin(reprise, deja_fait):
-    reste = timedelta(hours=HEURES_CIBLE) - deja_fait
-    return reprise + reste
+def parse_ts(ts):
+    return datetime.fromisoformat(ts) if ts else None
 
-# Chargement
-date_du_jour = datetime.now().date().isoformat()
-journal = charger_journal()
 
-if date_du_jour not in journal:
-    journal[date_du_jour] = {
-        "debut": None,
-        "pause": None,
-        "reprise": None,
-        "fin": None,
-        "overtime": 0.0
-    }
+def format_td(td):
+    h = td.seconds // 3600 + td.days * 24
+    m = (td.seconds % 3600) // 60
+    return f"{h}h {m}min"
 
-data = journal[date_du_jour]
 
-# UI principale
-st.set_page_config("Badgeuse")
-st.title("🕒 Tracker de Travail")
+def estimate_finish(start: datetime, worked: timedelta, target: float):
+    remaining = timedelta(hours=target) - worked
+    return start + remaining if remaining > timedelta(0) else datetime.now()
 
-# Badges visibles en permanence
-st.subheader("📌 Badges")
-col1, col2 = st.columns(2)
+# ---------- CHARGEMENT ----------
+journal = load_journal()
+today = date.today().isoformat()
 
-if col1.button("🟢 Démarrer la journée"):
-    data["debut"] = datetime.now().isoformat()
-    sauvegarder_journal(journal)
+if today not in journal:
+    journal[today] = {key: None for key in ["start","pause","resume","end"]}
+    journal[today]["overtime_manual"] = 0.0
 
-if col2.button("🍽 Pause déjeuner"):
-    data["pause"] = datetime.now().isoformat()
-    sauvegarder_journal(journal)
+record = journal[today]
 
-if col1.button("✅ Reprendre"):
-    data["reprise"] = datetime.now().isoformat()
-    sauvegarder_journal(journal)
+# ---------- SIDEBAR ----------
+st.sidebar.title("📋 Paramètres")
+target = st.sidebar.number_input("Objectif (h)", value=DEFAULT_TARGET, step=0.25)
+alert_thresh = st.sidebar.number_input("Alerte (h)", value=DEFAULT_ALERT, step=0.25)
+max_thresh = st.sidebar.number_input("Plafond (h)", value=DEFAULT_MAX, step=0.25)
 
-if col2.button("🔴 Fin de journée"):
-    data["fin"] = datetime.now().isoformat()
-    sauvegarder_journal(journal)
+# ---------- INTERFACE PRINCIPALE ----------
+st.set_page_config(page_title="Badgeuse Mobile", layout="wide")
+st.title("🕒 Tracker de Temps de Travail")
 
-# Récupération des temps
-fmt = lambda x: datetime.fromisoformat(x) if x else None
-debut = fmt(data["debut"])
-pause = fmt(data["pause"])
-reprise = fmt(data["reprise"])
-fin = fmt(data["fin"]) if data["fin"] else datetime.now()
+# Affichage des metrics
+col1, col2, col3, col4 = st.columns(4)
 
-temps_total = timedelta()
-if debut:
-    if pause and reprise:
-        matin = pause - debut
-        aprem = fin - reprise
-        temps_total = matin + aprem
+# Calcul des temps
+start_ts = parse_ts(record["start"])
+pause_ts = parse_ts(record["pause"])
+resume_ts = parse_ts(record["resume"])
+end_ts = parse_ts(record["end"]) or datetime.now()
+
+worked = timedelta(0)
+if start_ts:
+    if pause_ts and resume_ts:
+        worked = (pause_ts - start_ts) + (end_ts - resume_ts)
     else:
-        temps_total = fin - debut
+        worked = end_ts - start_ts
 
-    st.success(f"Temps travaillé : {format_timedelta(temps_total)}")
+delta_hours = worked.total_seconds()/3600 - target
+manual_ot = record.get("overtime_manual", 0.0)
 
-    if reprise:
-        est_fin = estimer_fin(reprise, temps_total)
-        st.info(f"Heure estimée de fin (8h) : {est_fin.strftime('%H:%M')}")
+col1.metric("Temps travaillé",
+            format_td(worked),
+            delta=f"{delta_hours:+.2f}h")
+col2.metric("Temps restants",
+            format_td(timedelta(hours=target) - worked if worked < timedelta(hours=target) else timedelta(0)))
+col3.metric("Overtime manuel",
+            f"{manual_ot:.2f}h")
+col4.metric("Est. fin (8h)",
+            estimate_finish(resume_ts or start_ts or datetime.now(), worked, target).strftime('%H:%M') if start_ts else "--")
 
-    st.markdown(f"**🔔 Heures de référence :** 8h | 8h30 | 9h")
+# ---------- BADGES ----------
+st.subheader("📌 Actions")
+cols = st.columns(4)
 
-    # Overtime
-    overtime = (temps_total.total_seconds() / 3600) - HEURES_CIBLE
-    if overtime > 0:
-        data["overtime"] = round(overtime, 2)
-        st.warning(f"🕑 Overtime actuel : {data['overtime']}h")
+# Boutons conditionnels
+def btn(label, enabled):
+    return cols.pop(0).button(label, disabled=not enabled)
 
-    if temps_total.total_seconds() >= HEURES_ALERTE * 3600:
-        st.error("⚠️ Tu as dépassé 8h30 de travail !")
+actions = {
+    'start':  not record['start'],
+    'pause':  record['start'] and not record['pause'],
+    'resume': record['pause'] and not record['resume'],
+    'end':    record['start'] and not record['end']
+}
 
-# Overtime manuel
-st.subheader("🔧 Ajuster Overtime")
-nouveau_ot = st.number_input("Corriger l'overtime (heures)", value=data.get("overtime", 0.0), step=0.25)
-data["overtime"] = nouveau_ot
-sauvegarder_journal(journal)
+if btn("🟢 Démarrer la journée", actions['start']):
+    record['start'] = datetime.now().isoformat()
+    save_journal(journal)
 
-# Historique
-st.subheader("📅 Historique")
-records = []
+if btn("🍽 Pause déjeuner", actions['pause']):
+    record['pause'] = datetime.now().isoformat()
+    save_journal(journal)
 
-for jour, d in journal.items():
-    deb = fmt(d["debut"])
-    f = fmt(d["fin"]) if d["fin"] else datetime.now()
-    if deb:
-        if d["pause"] and d["reprise"]:
-            p = fmt(d["pause"])
-            r = fmt(d["reprise"])
-            matin = p - deb
-            aprem = f - r
-            total = matin + aprem
-        else:
-            total = f - deb
+if btn("✅ Reprendre", actions['resume']):
+    record['resume'] = datetime.now().isoformat()
+    save_journal(journal)
 
-        h_total = total.total_seconds() / 3600
-        delta = round(h_total - HEURES_CIBLE, 2)
+if btn("🔴 Fin de journée", actions['end']):
+    record['end'] = datetime.now().isoformat()
+    save_journal(journal)
 
-        records.append({
-            "Date": jour,
-            "Heure début": deb.strftime('%H:%M') if deb else '',
-            "Heure fin": f.strftime('%H:%M') if f else '',
-            "Heures travaillées": round(h_total, 2),
-            "Delta vs 8h": delta,
-            "Overtime": d.get("overtime", 0.0)
+# Alerte
+if worked.total_seconds() >= alert_thresh*3600:
+    st.error(f"⚠️ Tu as dépassé {alert_thresh}h de travail !")
+
+# Barre de progression
+st.progress(min(worked.total_seconds()/(max_thresh*3600),1.0))
+st.write(f"Repères : {target}h | {alert_thresh}h | {max_thresh}h")
+
+# ---------- AJUSTEMENT ----------
+st.subheader("🔧 Ajuster Overtime Manuellement")
+over_input = st.number_input("Overtime manuelle (h)", value=manual_ot, step=0.25)
+record['overtime_manual'] = over_input
+save_journal(journal)
+
+# ---------- HISTORIQUE & TÉLÉCHARGEMENT ----------
+st.subheader("📅 Historique ({DAYS_HISTORY} jours)")
+rows = []
+time_formats = []
+
+for d, rec in sorted(journal.items(), reverse=True)[:DAYS_HISTORY]:
+    s = parse_ts(rec['start'])
+    p = parse_ts(rec['pause'])
+    r = parse_ts(rec['resume'])
+    e = parse_ts(rec['end']) or datetime.now()
+    if s:
+        wt = (p - s if p and s else timedelta(0)) + (e - r if r and e else timedelta(0)) if p and r else (e - s)
+        delta = round(wt.total_seconds()/3600 - target,2)
+        rows.append({
+            'Date': d,
+            'Start': s.strftime('%H:%M') if s else '',
+            'Pause': p.strftime('%H:%M') if p else '',
+            'Resume': r.strftime('%H:%M') if r else '',
+            'End': e.strftime('%H:%M') if e else '',
+            'Worked (h)': round(wt.total_seconds()/3600,2),
+            'Delta vs target': delta,
+            'Manual OT': rec.get('overtime_manual',0.0)
         })
 
-# Affichage tableau + export
-if records:
-    df = pd.DataFrame(records)
+if rows:
+    df = pd.DataFrame(rows)
     st.dataframe(df)
-    csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Télécharger CSV", data=csv, file_name="heures_travail.csv", mime="text/csv")
+    # Export CSV & Excel
+    csv = df.to_csv(index=False).encode()
+    st.download_button("Télécharger CSV", csv, "heures_travail.csv", "text/csv")
+
+    # Excel
+    def to_excel(df):
+        from io import BytesIO
+        with BytesIO() as buf:
+            writer = pd.ExcelWriter(buf, engine='xlsxwriter')
+            df.to_excel(writer, index=False, sheet_name='Journal')
+            writer.save()
+            return buf.getvalue()
+    xlsx_data = to_excel(df)
+    st.download_button("Télécharger Excel", xlsx_data, "heures_travail.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# ---------- Thème mobile-friendly ----------
+st.markdown("<style>button {width: 100%; margin-bottom: 10px;} .stProgress > div > div > div {height: 20px;}</style>", unsafe_allow_html=True)
