@@ -24,6 +24,7 @@ def load_journal():
 def save_journal(journal):
     with open(JOURNAL_FILE, "w") as f:
         json.dump(journal, f, indent=2)
+    st.experimental_rerun()  # Force rerun pour mettre à jour l'UI après chaque action
 
 
 def parse_ts(ts):
@@ -157,12 +158,15 @@ if rows:
     # Export CSV
     csv = df.to_csv(index=False).encode()
     st.download_button("📥 Télécharger CSV", csv, "heures_travail.csv", "text/csv")
-    # Export Excel via openpyxl
-    buf = BytesIO()
-    df.to_excel(buf, index=False, sheet_name="Journal")
-    buf.seek(0)
-    xlsx = buf.getvalue()
-    st.download_button("📥 Télécharger Excel", xlsx, "heures_travail.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    # Export Excel - nécessite openpyxl dans requirements.txt
+    try:
+        buf = BytesIO()
+        df.to_excel(buf, index=False, sheet_name="Journal")
+        buf.seek(0)
+        xlsx = buf.getvalue()
+        st.download_button("📥 Télécharger Excel", xlsx, "heures_travail.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except ModuleNotFoundError:
+        st.warning("Pour exporter en Excel, ajoutez 'openpyxl' à votre requirements.txt.")
 
 # ---------- STYLES MOBILE ----------
 st.markdown(
