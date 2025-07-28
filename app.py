@@ -1,175 +1,82 @@
 import streamlit as st
-import json
-import os
 import pandas as pd
-from datetime import datetime, timedelta, date
-from io import BytesIO
 
-# ---------- CONFIGURATION ----------
-JOURNAL_FILE = "heures_travail.json"
-DEFAULT_TARGET = 8.0             # heures normales
-DEFAULT_ALERT = 8.5              # seuil d'alerte
-DEFAULT_MAX = 9.0                # plafond
-DAYS_HISTORY = 14                # jours à afficher en historique
+st.title("Physico-Chemical DB & Converters")
 
-# ---------- UTILITAIRES ----------
+# Option to upload extended database
+st.sidebar.header("Database Configuration")
+upload = st.sidebar.file_uploader("Upload a CSV file with physico-chemical data", type=["csv"])
 
-def load_journal():
-    if os.path.exists(JOURNAL_FILE):
-        with open(JOURNAL_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-
-def save_journal(journal):
-    with open(JOURNAL_FILE, "w") as f:
-        json.dump(journal, f, indent=2)
-    st.experimental_rerun()  # Force rerun pour mettre à jour l'UI après chaque action
-
-
-def parse_ts(ts):
-    return datetime.fromisoformat(ts) if ts else None
-
-
-def format_td(td):
-    hours = td.seconds // 3600 + td.days * 24
-    minutes = (td.seconds % 3600) // 60
-    return f"{hours}h {minutes}min"
-
-
-def estimate_finish(start, worked, target):
-    remaining = timedelta(hours=target) - worked
-    return (start + remaining) if remaining > timedelta(0) else datetime.now()
-
-# ---------- CHARGEMENT & MIGRATION ----------
-journal = load_journal()
-# Migration des anciennes clés
-for day, rec in journal.items():
-    if "debut" in rec:
-        rec.setdefault("start", rec.pop("debut"))
-    if "reprise" in rec:
-        rec.setdefault("resume", rec.pop("reprise"))
-    if "fin" in rec:
-        rec.setdefault("end", rec.pop("fin"))
-    if "overtime" in rec:
-        rec.setdefault("overtime_manual", rec.pop("overtime"))
-    for k in ["start", "pause", "resume", "end"]:
-        rec.setdefault(k, None)
-    rec.setdefault("overtime_manual", 0.0)
-# Initialisation du jour
-today = date.today().isoformat()
-if today not in journal:
-    journal[today] = {"start": None, "pause": None, "resume": None, "end": None, "overtime_manual": 0.0}
-record = journal[today]
-
-# ---------- SIDEBAR ----------
-st.sidebar.title("📋 Paramètres")
-target = st.sidebar.number_input("Objectif (h)", value=DEFAULT_TARGET, step=0.25)
-alert_thresh = st.sidebar.number_input("Alerte (h)", value=DEFAULT_ALERT, step=0.25)
-max_thresh = st.sidebar.number_input("Plafond (h)", value=DEFAULT_MAX, step=0.25)
-
-# ---------- INTERFACE PRINCIPALE ----------
-st.set_page_config(page_title="Badgeuse Mobile", layout="wide")
-st.title("🕒 Tracker de Temps de Travail")
-
-# Calcul des temps
-start_ts = parse_ts(record.get("start"))
-pause_ts = parse_ts(record.get("pause"))
-resume_ts = parse_ts(record.get("resume"))
-end_ts = parse_ts(record.get("end")) or datetime.now()
-worked = timedelta(0)
-if start_ts:
-    if pause_ts and resume_ts:
-        worked = (pause_ts - start_ts) + (end_ts - resume_ts)
-    else:
-        worked = end_ts - start_ts
-
-delta_hours = worked.total_seconds()/3600 - target
-manual_ot = record.get("overtime_manual", 0.0)
-
-# Affichage métriques
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Temps travaillé", format_td(worked), delta=f"{delta_hours:+.2f}h")
-c2.metric("Temps restants", format_td((timedelta(hours=target) - worked) if worked < timedelta(hours=target) else timedelta(0)))
-c3.metric("Overtime manuel", f"{manual_ot:.2f}h")
-est_finish = estimate_finish(resume_ts or start_ts or datetime.now(), worked, target).strftime('%H:%M') if start_ts else "--"
-c4.metric("Est. fin (8h)", est_finish)
-
-# ---------- ACTIONS ----------
-st.subheader("📌 Actions")
-b1, b2, b3, b4 = st.columns(4)
-actions = {
-    "start": not record.get("start"),
-    "pause": record.get("start") and not record.get("pause"),
-    "resume": record.get("pause") and not record.get("resume"),
-    "end": record.get("start") and not record.get("end")
-}
-if b1.button("🟢 Démarrer", disabled=not actions["start"]):
-    record["start"] = datetime.now().isoformat()
-    save_journal(journal)
-if b2.button("🍽 Pause", disabled=not actions["pause"]):
-    record["pause"] = datetime.now().isoformat()
-    save_journal(journal)
-if b3.button("✅ Reprendre", disabled=not actions["resume"]):
-    record["resume"] = datetime.now().isoformat()
-    save_journal(journal)
-if b4.button("🔴 Fin", disabled=not actions["end"]):
-    record["end"] = datetime.now().isoformat()
-    save_journal(journal)
-
-# Alerte & progression
-if start_ts and worked.total_seconds() >= alert_thresh * 3600:
-    st.error(f"⚠️ Tu as dépassé {alert_thresh}h !")
-progress_val = min(worked.total_seconds()/(max_thresh*3600), 1.0)
-st.progress(progress_val)
-st.write(f"Repères : {target}h | {alert_thresh}h | {max_thresh}h")
-
-# ---------- AJUSTEMENT OVERTIME ----------
-st.subheader("🔧 Ajuster Overtime Manuel")
-ot_input = st.number_input("Overtime manuel (h)", value=manual_ot, step=0.25)
-if ot_input != record.get("overtime_manual", 0.0):
-    record["overtime_manual"] = ot_input
-    save_journal(journal)
-
-# ---------- HISTORIQUE & EXPORT ----------
-st.subheader(f"📅 Historique ({DAYS_HISTORY} jours)")
-rows = []
-for d, rec in sorted(journal.items(), reverse=True)[:DAYS_HISTORY]:
-    s = parse_ts(rec.get("start"))
-    p = parse_ts(rec.get("pause"))
-    r = parse_ts(rec.get("resume"))
-    e = parse_ts(rec.get("end")) or datetime.now()
-    if s:
-        wt = ((p - s) + (e - r)) if p and r else (e - s)
-        delta = round(wt.total_seconds()/3600 - target, 2)
-        rows.append({
-            "Date": d,
-            "Start": s.strftime('%H:%M'),
-            "Pause": p.strftime('%H:%M') if p else "",
-            "Resume": r.strftime('%H:%M') if r else "",
-            "End": e.strftime('%H:%M'),
-            "Worked (h)": round(wt.total_seconds()/3600, 2),
-            "Delta vs tgt": delta,
-            "Manual OT": rec.get("overtime_manual", 0.0)
-        })
-if rows:
-    df = pd.DataFrame(rows)
-    st.dataframe(df)
-    # Export CSV
-    csv = df.to_csv(index=False).encode()
-    st.download_button("📥 Télécharger CSV", csv, "heures_travail.csv", "text/csv")
-    # Export Excel - nécessite openpyxl dans requirements.txt
+if upload:
     try:
-        buf = BytesIO()
-        df.to_excel(buf, index=False, sheet_name="Journal")
-        buf.seek(0)
-        xlsx = buf.getvalue()
-        st.download_button("📥 Télécharger Excel", xlsx, "heures_travail.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    except ModuleNotFoundError:
-        st.warning("Pour exporter en Excel, ajoutez 'openpyxl' à votre requirements.txt.")
+        df = pd.read_csv(upload)
+        df.set_index('Compound', inplace=True)
+    except Exception as e:
+        st.sidebar.error(f"Erreur en lisant le fichier: {e}")
+        st.stop()
+else:
+    # Default sample database (expandable in CSV)
+    data = {
+        "Compound": [
+            "Olive Oil", "Sunflower Oil", "Coconut Oil", "Corn Oil", "Canola Oil", "Palm Oil",
+            "Hexane", "Toluene", "Ethanol", "Methanol", "Acetone", "Chloroform", "Dichloromethane (DCM)", "Isopropanol", "DMF", "DMSO", "Water",
+            "β-Carotene", "Lycopene", "Lutein", "Zeaxanthin", "Astaxanthin", "Cryptoxanthin", "Phytoene", "Phytofluene",
+            "Vitamin A (Retinol)", "Vitamin C (Ascorbic Acid)", "Vitamin D3 (Cholecalciferol)", "Vitamin E (α-Tocopherol)", "Vitamin K1 (Phylloquinone)", "Vitamin B1 (Thiamine)", "Vitamin B2 (Riboflavin)", "Vitamin B3 (Niacin)", "Vitamin B6 (Pyridoxine)", "Vitamin B12 (Cobalamin)"
+        ],
+        "Type": [
+            "Oil"]*6 + ["Solvent"]*8 + ["Carotenoid"]*6 + ["Vitamin"]*7,
+        "Density (g/mL)": [
+            0.91, 0.92, 0.924, 0.92, 0.91, 0.88,
+            0.66, 0.87, 0.789, 0.791, 0.784, 1.48, 1.33, 0.786, 0.944, 1.10, 1.00,
+            1.01, 1.06, 1.02, 1.02, 1.07, 1.03, 0.96, 0.95,
+            0.96, 1.65, 1.02, 0.95, 1.00, 1.03, 1.33, 1.38, 1.11, 1.34
+        ],
+        "Refractive Index": [
+            1.467, 1.472, 1.448, 1.467, 1.468, 1.449,
+            1.375, 1.496, 1.361, 1.328, 1.359, 1.445, 1.424, 1.377, 1.430, 1.479, 1.333,
+            1.52, 1.54, 1.47, 1.47, 1.54, 1.50, 1.49, 1.48,
+            1.51, 1.56, 1.53, 1.50, 1.55, 1.58, 1.61, 1.62, 1.50, 1.61
+        ],
+        "MW (g/mol)": [
+            None, None, None, None, None, None,
+            86.18, 92.14, 46.07, 32.04, 58.08, 119.38, 84.93, 60.10, 73.09, 78.13, 18.02,
+            536.87, 536.85, 568.87, 568.87, 596.84, 552.87, 536.88, 536.88,
+            286.45, 176.12, 384.64, 430.71, 450.71, 265.35, 376.37, 123.11, 169.18, 1355.37
+        ]
+    }
+    df = pd.DataFrame(data).set_index('Compound')
 
-# ---------- STYLES MOBILE ----------
+# Show database
+st.subheader("Database Preview")
+st.dataframe(df)
+
+# Converters
+st.subheader("Converters")
+def wt_percent_to_ppm(wt):
+    return wt * 10000
+
+def mL_to_g(vol, dens):
+    return vol * dens
+
+def g_to_mL(mass, dens):
+    return mass / dens if dens else None
+
+conv = st.selectbox('Select conversion:', ['%wt → ppm', 'mL → g', 'g → mL'], key='conv')
+compound = st.selectbox('Choose a compound for density reference:', df.index, key='cmp')
+dens = df.loc[compound, 'Density (g/mL)'] if 'Density (g/mL)' in df.columns else None
+
+if conv == '%wt → ppm':
+    wt = st.number_input('Enter % weight (wt%):', min_value=0.0, key='wt')
+    st.write(f"{wt}% wt = {wt_percent_to_ppm(wt):,.1f} ppm")
+elif conv == 'mL → g':
+    vol = st.number_input('Enter volume (mL):', min_value=0.0, key='vol')
+    st.write(f"{vol} mL × {dens} g/mL = {mL_to_g(vol, dens):,.3f} g")
+else:
+    mass = st.number_input('Enter mass (g):', min_value=0.0, key='mass')
+    vol = g_to_mL(mass, dens)
+    st.write(f"{mass} g ÷ {dens} g/mL = {vol:,.3f} mL")
+
+st.markdown("---")
 st.markdown(
-    "<style>button{width:100%; margin-bottom:8px;} .stProgress>div>div>div{height:24px;}</style>",
-    unsafe_allow_html=True
+    "**+** Téléverse ton propre CSV pour une base de données illimitée, ou modifie le fichier local `physico_params.csv` avec tes centaines de composés et paramètres personnalisés."
 )
