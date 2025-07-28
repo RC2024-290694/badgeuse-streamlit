@@ -3,7 +3,7 @@ import pandas as pd
 
 st.title("Physico-Chemical DB & Converters")
 
-# Option to upload extended database
+# --- Upload option ---
 st.sidebar.header("Database Configuration")
 upload = st.sidebar.file_uploader("Upload a CSV file with physico-chemical data", type=["csv"])
 
@@ -15,16 +15,16 @@ if upload:
         st.sidebar.error(f"Erreur en lisant le fichier: {e}")
         st.stop()
 else:
-    # Default sample database (expandable in CSV)
+    # --- Default sample database (35+ composés) ---
     data = {
         "Compound": [
             "Olive Oil", "Sunflower Oil", "Coconut Oil", "Corn Oil", "Canola Oil", "Palm Oil",
             "Hexane", "Toluene", "Ethanol", "Methanol", "Acetone", "Chloroform", "Dichloromethane (DCM)", "Isopropanol", "DMF", "DMSO", "Water",
             "β-Carotene", "Lycopene", "Lutein", "Zeaxanthin", "Astaxanthin", "Cryptoxanthin", "Phytoene", "Phytofluene",
-            "Vitamin A (Retinol)", "Vitamin C (Ascorbic Acid)", "Vitamin D3 (Cholecalciferol)", "Vitamin E (α-Tocopherol)", "Vitamin K1 (Phylloquinone)", "Vitamin B1 (Thiamine)", "Vitamin B2 (Riboflavin)", "Vitamin B3 (Niacin)", "Vitamin B6 (Pyridoxine)", "Vitamin B12 (Cobalamin)"
+            "Vitamin A (Retinol)", "Vitamin C (Ascorbic Acid)", "Vitamin D3 (Cholecalciferol)", "Vitamin E (α-Tocopherol)", "Vitamin K1 (Phylloquinone)",
+            "Vitamin B1 (Thiamine)", "Vitamin B2 (Riboflavin)", "Vitamin B3 (Niacin)", "Vitamin B6 (Pyridoxine)", "Vitamin B12 (Cobalamin)"
         ],
-        "Type": [
-            "Oil"]*6 + ["Solvent"]*8 + ["Carotenoid"]*6 + ["Vitamin"]*7,
+        "Type": ["Oil"]*6 + ["Solvent"]*8 + ["Carotenoid"]*6 + ["Vitamin"]*7,
         "Density (g/mL)": [
             0.91, 0.92, 0.924, 0.92, 0.91, 0.88,
             0.66, 0.87, 0.789, 0.791, 0.784, 1.48, 1.33, 0.786, 0.944, 1.10, 1.00,
@@ -46,12 +46,11 @@ else:
     }
     df = pd.DataFrame(data).set_index('Compound')
 
-# Show database
+# --- Display database ---
 st.subheader("Database Preview")
 st.dataframe(df)
 
-# Converters
-st.subheader("Converters")
+# --- Conversion functions ---
 def wt_percent_to_ppm(wt):
     return wt * 10000
 
@@ -61,22 +60,23 @@ def mL_to_g(vol, dens):
 def g_to_mL(mass, dens):
     return mass / dens if dens else None
 
-conv = st.selectbox('Select conversion:', ['%wt → ppm', 'mL → g', 'g → mL'], key='conv')
-compound = st.selectbox('Choose a compound for density reference:', df.index, key='cmp')
+# --- UI for converters ---
+st.subheader("Converters")
+conv = st.selectbox('Select conversion:', ['%wt → ppm', 'mL → g', 'g → mL'])
+compound = st.selectbox('Choose a compound for density reference:', df.index)
 dens = df.loc[compound, 'Density (g/mL)'] if 'Density (g/mL)' in df.columns else None
 
 if conv == '%wt → ppm':
-    wt = st.number_input('Enter % weight (wt%):', min_value=0.0, key='wt')
+    wt = st.number_input('Enter % weight (wt%):', min_value=0.0)
     st.write(f"{wt}% wt = {wt_percent_to_ppm(wt):,.1f} ppm")
 elif conv == 'mL → g':
-    vol = st.number_input('Enter volume (mL):', min_value=0.0, key='vol')
+    vol = st.number_input('Enter volume (mL):', min_value=0.0)
     st.write(f"{vol} mL × {dens} g/mL = {mL_to_g(vol, dens):,.3f} g")
 else:
-    mass = st.number_input('Enter mass (g):', min_value=0.0, key='mass')
-    vol = g_to_mL(mass, dens)
-    st.write(f"{mass} g ÷ {dens} g/mL = {vol:,.3f} mL")
+    mass = st.number_input('Enter mass (g):', min_value=0.0)
+    st.write(f"{mass} g ÷ {dens} g/mL = {g_to_mL(mass, dens):,.3f} mL")
 
 st.markdown("---")
 st.markdown(
-    "**+** Téléverse ton propre CSV pour une base de données illimitée, ou modifie le fichier local `physico_params.csv` avec tes centaines de composés et paramètres personnalisés."
+    "**+** Téléverse ton propre CSV pour une base de données illimitée, ou modifie le fichier local `physico_params.csv`."
 )
